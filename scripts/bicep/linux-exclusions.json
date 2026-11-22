@@ -1,0 +1,2 @@
+[ "mysql*", "mariadb*", "postgresql*", "mongodb*", "redis*", "docker*", "containerd*",
+  "nginx*", "httpd*", "apache2*", "openjdk*", "java-*", "nodejs*", "dotnet*", "aspnetcore*", "php*" ]

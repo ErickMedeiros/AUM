@@ -1,0 +1,146 @@
+// AUM · Q1 · Inventário de SO, versão, edição e ciclo de suporte (Azure VMs + Azure Arc)
+// Colar SOMENTE este arquivo no Resource Graph Explorer, com o escopo na assinatura alvo, e clicar em Run.
+// Q1 · INVENTÁRIO CONSOLIDADO (uma linha por máquina) → exportar como CSV
+// -------------------------------------------------------------------------------------
+resources
+| where type =~ 'microsoft.compute/virtualmachines'
+| extend img = properties.storageProfile.imageReference
+| project id, nome = name, resourceGroup, subscriptionId, location,
+    plataforma = 'VM Azure',
+    estado = tostring(split(tostring(properties.extended.instanceView.powerState.code), '/')[1]),
+    osType = tostring(properties.storageProfile.osDisk.osType),
+    soAgente = tostring(properties.extended.instanceView.osName),        // preenchido quando a VM está ligada e o agente reporta
+    versaoAgente = tostring(properties.extended.instanceView.osVersion),
+    edicaoBruta = '',
+    publisher = tostring(img.publisher), offer = tostring(img.offer), sku = tostring(img.sku),
+    imagemCustom = isnotempty(tostring(img.id)),
+    agenteArc = '',
+    patchMode = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.patchMode), tostring(properties.osProfile.linuxConfiguration.patchSettings.patchMode)),
+    avaliacaoPeriodica = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.assessmentMode), tostring(properties.osProfile.linuxConfiguration.patchSettings.assessmentMode)),
+    hotpatchAtivo = tostring(properties.osProfile.windowsConfiguration.patchSettings.enableHotpatching),
+    ambiente = tostring(tags.Ambiente), patchWave = tostring(tags.PatchWave)
+| union (
+    resources
+    | where type =~ 'microsoft.hybridcompute/machines'
+    | project id, nome = name, resourceGroup, subscriptionId, location,
+        plataforma = iff(kind =~ 'vmware', 'Arc · VM VMware', 'Servidor Arc'),
+        estado = tostring(properties.status),                           // Connected, Disconnected, Expired; vazio = agente não instalado
+        osType = tostring(properties.osType),
+        soAgente = tostring(properties.osSku),                          // ex.: Windows Server 2019 Datacenter
+        versaoAgente = tostring(properties.osVersion),                  // ex.: 10.0.17763.6893
+        edicaoBruta = tostring(properties.osEdition),
+        publisher = '', offer = '', sku = '', imagemCustom = false,
+        agenteArc = tostring(properties.agentVersion),
+        patchMode = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.patchMode), tostring(properties.osProfile.linuxConfiguration.patchSettings.patchMode)),
+        avaliacaoPeriodica = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.assessmentMode), tostring(properties.osProfile.linuxConfiguration.patchSettings.assessmentMode)),
+        hotpatchAtivo = '',
+        ambiente = tostring(tags.Ambiente), patchWave = tostring(tags.PatchWave)
+  )
+// ---------- Normalização: família, versão e edição ----------
+| extend t = tolower(strcat(soAgente, ' ', versaoAgente, ' ', edicaoBruta, ' ', publisher, ' ', offer, ' ', sku))
+| extend familia = case(
+    t contains 'windows 10' or t contains 'windows 11' or t contains 'windows-10' or t contains 'windows-11' or t contains 'win10' or t contains 'win11', 'Windows (cliente)',
+    osType =~ 'windows' or t has 'windows' or t has 'windowsserver', 'Windows Server',
+    t has 'ubuntu' or t has_any ('jammy', 'focal', 'noble', 'bionic'), 'Ubuntu',
+    t has 'rhel' or t has 'redhat' or t contains 'red hat', 'RHEL',
+    t contains 'rocky', 'Rocky Linux',
+    t contains 'alma', 'AlmaLinux',
+    t has 'centos', 'CentOS',
+    t has 'debian', 'Debian',
+    t has 'sles' or t contains 'suse', 'SLES',
+    t contains 'oracle', 'Oracle Linux',
+    isempty(t) or t matches regex @'^\s*$', 'Sem informação',
+    'Não identificado')
+| extend ubuntuNum = extract(@'(\d{2})[._]04', 1, t),
+         elMajor = coalesce(extract(@'(?:enterprise linux|rocky linux|almalinux|centos linux|oracle linux)\D{0,3}(\d+)', 1, t),
+                            extract(@'^(\d+)', 1, versaoAgente), extract(@'^(\d)', 1, sku)),
+         debMajor = coalesce(extract(@'debian\D{0,12}(\d+)', 1, t), extract(@'^(\d+)', 1, versaoAgente)),
+         slesMajor = extract(@'(?:sles|suse linux enterprise server)\D{0,5}(\d{2})', 1, t)
+| extend versao = case(
+    familia == 'Windows Server', case(
+        t matches regex @'2025|10\.0\.26100', '2025',
+        t matches regex @'2022|10\.0\.20348', '2022',
+        t matches regex @'2019|10\.0\.17763', '2019',
+        t matches regex @'2016|10\.0\.14393', '2016',
+        t matches regex @'2012[- ]?r2|6\.3\.9600', '2012 R2',
+        t matches regex @'2012|6\.2\.9200', '2012',
+        t matches regex @'2008|6\.[01]\.', '2008', ''),
+    familia == 'Windows (cliente)', coalesce(extract(@'(2[0-9]h[12])', 1, t), extract(@'(1[01])', 1, t)),
+    familia == 'Ubuntu', case(t has 'noble', '24.04', t has 'jammy', '22.04', t has 'focal', '20.04', t has 'bionic', '18.04',
+                              isnotempty(ubuntuNum), strcat(ubuntuNum, '.04'), ''),
+    familia in ('RHEL', 'Rocky Linux', 'AlmaLinux', 'CentOS', 'Oracle Linux'), elMajor,
+    familia == 'Debian', debMajor,
+    familia == 'SLES', slesMajor,
+    '')
+| extend edicao = case(
+    familia startswith 'Windows', case(
+        t contains 'azure-edition' or t contains 'azure edition' or t contains 'azureedition', 'Datacenter: Azure Edition',
+        t contains 'datacenter', 'Datacenter',
+        t contains 'standard', 'Standard',
+        t contains 'essentials', 'Essentials',
+        t contains 'enterprise', 'Enterprise',
+        t contains 'pro', 'Pro',
+        'Não identificada'),
+    familia in ('Sem informação', 'Não identificado'), 'Não identificada',
+    'N/A (Linux)')
+// ---------- Ciclo de suporte (fim do suporte gratuito de segurança) ----------
+| extend chave = strcat(familia, ' ', versao)
+| extend fimSuporte = case(
+    chave == 'Windows Server 2008', datetime(2020-01-14),
+    chave in ('Windows Server 2012', 'Windows Server 2012 R2'), datetime(2023-10-10),   // ESU ano 3 terminou em 13/10/2026
+    chave == 'Windows Server 2016', datetime(2027-01-12),
+    chave == 'Windows Server 2019', datetime(2029-01-09),
+    chave == 'Windows Server 2022', datetime(2031-10-14),
+    chave == 'Windows Server 2025', datetime(2034-11-14),
+    chave == 'Ubuntu 18.04', datetime(2023-05-31),
+    chave == 'Ubuntu 20.04', datetime(2025-05-31),
+    chave == 'Ubuntu 22.04', datetime(2027-05-31),
+    chave == 'Ubuntu 24.04', datetime(2029-05-31),
+    chave == 'Ubuntu 26.04', datetime(2031-05-31),
+    chave in ('RHEL 7', 'CentOS 7'), datetime(2024-06-30),
+    chave == 'Oracle Linux 7', datetime(2024-12-31),
+    chave in ('CentOS 8'), datetime(2021-12-31),
+    chave in ('RHEL 8', 'Rocky Linux 8', 'AlmaLinux 8', 'Oracle Linux 8'), datetime(2029-05-31),
+    chave in ('RHEL 9', 'Rocky Linux 9', 'AlmaLinux 9', 'Oracle Linux 9'), datetime(2032-05-31),
+    chave in ('RHEL 10', 'Rocky Linux 10', 'AlmaLinux 10'), datetime(2035-05-31),
+    chave == 'Debian 10', datetime(2024-06-30),
+    chave == 'Debian 11', datetime(2026-08-31),
+    chave == 'Debian 12', datetime(2028-06-30),
+    chave == 'Debian 13', datetime(2030-06-30),
+    chave == 'SLES 12', datetime(2024-10-31),
+    datetime(null))
+| extend diasParaFim = toint((fimSuporte - now()) / 1d)
+| extend situacaoSuporte = case(
+    isempty(versao), 'Verificar: versão não identificada',
+    isnull(fimSuporte), 'Verificar: data de suporte não mapeada',
+    diasParaFim < 0, 'Sem suporte',
+    diasParaFim <= 180, 'Vence em até 6 meses',
+    diasParaFim <= 365, 'Vence em até 12 meses',
+    'Suportado')
+| extend fonteVersao = case(
+    isnotempty(soAgente), iff(plataforma == 'VM Azure', 'Agente da VM (instanceView)', 'Agente Arc'),
+    isnotempty(publisher), 'Imagem do Marketplace',
+    imagemCustom, 'Imagem custom: sem versão',
+    plataforma == 'Arc · VM VMware', 'Sem agente Arc (ver Q3)',
+    'Sem informação')
+| extend hotpatchElegivel = case(
+    plataforma == 'VM Azure' and familia == 'Windows Server' and versao in ('2022', '2025') and edicao == 'Datacenter: Azure Edition' and not(imagemCustom), 'Sim',
+    plataforma != 'VM Azure' and familia == 'Windows Server' and versao == '2025' and edicao in ('Datacenter', 'Standard'), 'Sim (habilitar no Arc)',
+    'Não')
+| extend pendencias = strcat(
+    iff(isempty(versao), 'Sem versão do SO; ', ''),
+    iff(edicao == 'Não identificada', 'Sem edição; ', ''),
+    iff(situacaoSuporte in ('Sem suporte', 'Vence em até 6 meses', 'Vence em até 12 meses'), strcat(situacaoSuporte, '; '), ''),
+    iff(plataforma == 'VM Azure' and estado != 'running', 'VM desligada; ', ''),
+    iff(plataforma == 'Servidor Arc' and estado != 'Connected', 'Arc não conectado; ', ''),
+    iff(plataforma == 'Arc · VM VMware' and isempty(agenteArc), 'Sem agente Arc; ', ''),
+    iff(isempty(ambiente), 'Sem tag Ambiente; ', ''))
+| project plataforma, nome, resourceGroup, estado, familia, versao, edicao, situacaoSuporte,
+    fimSuporte = substring(tostring(fimSuporte), 0, 10), diasParaFim, fonteVersao,
+    soInformado = soAgente, versaoInformada = versaoAgente, publisher, offer, sku, imagemCustom,
+    agenteArc, patchMode, avaliacaoPeriodica, hotpatchAtivo, hotpatchElegivel,
+    ambiente, patchWave, pendencias, location, subscriptionId, id
+| order by plataforma asc, situacaoSuporte asc, nome asc
+// Para exportar só as máquinas com problema, descomente a linha abaixo:
+// | where situacaoSuporte != 'Suportado' or isnotempty(pendencias)
+

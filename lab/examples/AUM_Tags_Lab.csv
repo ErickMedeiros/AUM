@@ -1,0 +1,5 @@
+ResourceId;Nome;Plataforma;Categoria;Ambiente;PatchWave;PreBackup;SystemOwner;Sistema;PatchStartStop;Confianca;Aprovado
+/subscriptions/<subscription-id>/resourceGroups/RG-AADDS/providers/Microsoft.Compute/virtualMachines/VM-SRV-AADDS;VM-SRV-AADDS;VM Azure;Lab DEV;DEV;Wave1-Dev;AzureBackup;owner@contoso.com;AADDS;false;Alta;S
+/subscriptions/<subscription-id>/resourceGroups/RG-LAB-HYPERV-BR/providers/Microsoft.Compute/virtualMachines/VM-HyperV-Host;VM-HyperV-Host;VM Azure;Lab HML piloto;HML;Wave2-HML-Piloto;Snapshot;owner@contoso.com;HyperV;false;Alta;S
+/subscriptions/<subscription-id>/resourceGroups/RG-IMERSAO-ARQUITETOAZURE/providers/Microsoft.Compute/virtualMachines/vm-imersao;vm-imersao;VM Azure;Lab HML;HML;Wave3-HML;Snapshot;owner@contoso.com;Imersao;true;Alta;S
+/subscriptions/<subscription-id>/resourceGroups/RG-SERVIDORES/providers/Microsoft.Compute/virtualMachines/srv-testedomain001;srv-testedomain001;VM Azure;Teste negativo (deve ser rejeitada);PROD;Wave1-Dev;Snapshot;;;false;Baixa;S

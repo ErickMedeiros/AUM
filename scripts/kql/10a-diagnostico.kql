@@ -1,0 +1,6 @@
+// AUM · Q0 · Diagnóstico: confirma o escopo e o que o Resource Graph enxerga
+// Confere quantas Azure VMs e máquinas Arc o Resource Graph enxerga na assinatura
+resources
+| where type in~ ('microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines', 'microsoft.connectedvmwarevsphere/virtualmachineinstances')
+| summarize maquinas = count() by type, subscriptionId
+

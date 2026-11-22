@@ -1,0 +1,74 @@
+// ===== Q1 · Status da última execução por Wave e ambiente =====
+patchinstallationresources
+| where type !has "softwarepatches"
+| extend vmId = tostring(split(tolower(id), "/patchinstallationresults/")[0])
+| extend status = tostring(properties.status), inicio = todatetime(properties.startDateTime),
+         instalados = toint(properties.installedPatchCount), falhas = toint(properties.failedPatchCount),
+         pendentes = toint(properties.pendingPatchCount), reboot = tostring(properties.rebootStatus)
+| where inicio > ago(35d)
+| summarize arg_max(inicio, *) by vmId
+| join kind=inner (resources
+    | where type in~ ("microsoft.compute/virtualmachines", "microsoft.hybridcompute/machines")
+    | project vmId = tolower(id), maquina = name, wave = tostring(tags.PatchWave), ambiente = tostring(tags.Ambiente)) on vmId
+| summarize maquinas = count(), sucesso = countif(status == "Succeeded"), falha = countif(status == "Failed"),
+            comAvisos = countif(status == "CompletedWithWarnings"), outros = countif(status !in ("Succeeded", "Failed", "CompletedWithWarnings"))
+            by wave, ambiente
+| order by wave asc
+ 
+// ===== Q2 · KBs e pacotes instalados ou com falha (7 dias) =====
+patchinstallationresources
+| where type has "softwarepatches"
+| extend vmId = tostring(split(tolower(id), "/patchinstallationresults/")[0])
+| extend quando = todatetime(properties.lastModifiedDateTime), patch = tostring(properties.patchName),
+         kb = tostring(properties.kbId), versao = tostring(properties.version),
+         estado = tostring(properties.installationState), classificacao = tostring(properties.classifications)
+| where quando > ago(7d)
+| join kind=inner (resources
+    | where type in~ ("microsoft.compute/virtualmachines", "microsoft.hybridcompute/machines")
+    | project vmId = tolower(id), maquina = name, wave = tostring(tags.PatchWave)) on vmId
+| project quando, wave, maquina, patch, kb, versao, classificacao, estado
+| order by wave asc, maquina asc
+ 
+// ===== Q3 · Máquinas com reboot pendente =====
+patchassessmentresources
+| where type !has "softwarepatches"
+| where tobool(properties.rebootPending)
+| extend vmId = tostring(split(tolower(id), "/patchassessmentresults/")[0])
+| join kind=inner (resources
+    | where type in~ ("microsoft.compute/virtualmachines", "microsoft.hybridcompute/machines")
+    | project vmId = tolower(id), maquina = name, wave = tostring(tags.PatchWave), ambiente = tostring(tags.Ambiente)) on vmId
+| project maquina, wave, ambiente, avaliado = todatetime(properties.lastModifiedDateTime)
+ 
+// ===== Q4 · Snapshots criados pelo pré-evento =====
+resources
+| where type =~ "microsoft.compute/snapshots" and tags.CreatedBy == "AUM-PreEvent"
+| project snapshot = name, resourceGroup, execucao = tostring(tags.MaintenanceRunId), vm = tostring(tags.SourceVm),
+          disco = tostring(tags.SourceDisk), criado = tostring(tags.CreatedOn), gb = toint(properties.diskSizeGB)
+| order by execucao desc
+ 
+// ===== Q5 · Jobs de backup on-demand das últimas 48 h =====
+recoveryservicesresources
+| where type =~ "microsoft.recoveryservices/vaults/backupjobs"
+| where tostring(properties.operation) == "Backup" and todatetime(properties.startTime) > ago(2d)
+| project vm = tostring(properties.entityFriendlyName), status = tostring(properties.status),
+          inicio = todatetime(properties.startTime), fim = todatetime(properties.endTime)
+| order by inicio desc
+ 
+// ===== Q6 · Pré-requisitos das VMs Azure (patch mode, avaliação periódica, estado) =====
+resources
+| where type =~ "microsoft.compute/virtualmachines"
+| extend w = properties.osProfile.windowsConfiguration.patchSettings, l = properties.osProfile.linuxConfiguration.patchSettings
+| project name, resourceGroup,
+          patchMode = coalesce(tostring(w.patchMode), tostring(l.patchMode)),
+          assessmentMode = coalesce(tostring(w.assessmentMode), tostring(l.assessmentMode)),
+          bypass = coalesce(tostring(w.automaticByPlatformSettings.bypassPlatformSafetyChecksOnUserSchedule),
+                            tostring(l.automaticByPlatformSettings.bypassPlatformSafetyChecksOnUserSchedule)),
+          estado = tostring(properties.extended.instanceView.powerState.code),
+          ambiente = tostring(tags.Ambiente), wave = tostring(tags.PatchWave)
+ 
+// ===== Q7 · Máquinas sem tag PatchWave (Onda 0) =====
+resources
+| where type in~ ("microsoft.compute/virtualmachines", "microsoft.hybridcompute/machines")
+| where isempty(tostring(tags.PatchWave))
+| project name, type, resourceGroup, ambiente = tostring(tags.Ambiente), status = tostring(properties.status)
+

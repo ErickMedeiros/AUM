@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "displayName": "AUM - Auditar tags Ambiente e PatchWave em VMs e servidores Arc",
+    "mode": "Indexed",
+    "policyRule": {
+      "if": {
+        "allOf": [
+          { "field": "type", "in": [ "Microsoft.Compute/virtualMachines", "Microsoft.HybridCompute/machines" ] },
+          { "anyOf": [
+              { "field": "tags['Ambiente']", "exists": "false" },
+              { "field": "tags['Ambiente']", "notIn": [ "DEV", "HML", "PROD" ] },
+              { "field": "tags['PatchWave']", "exists": "false" },
+              { "field": "tags['PatchWave']", "notIn": [ "Wave1-Dev", "Wave2-HML-Piloto", "Wave3-HML", "Hold", "Nao-Aplicavel" ] },
+              { "allOf": [ { "field": "tags['Ambiente']", "equals": "PROD" }, { "field": "tags['PatchWave']", "like": "Wave*" } ] },
+              { "allOf": [ { "field": "tags['Ambiente']", "equals": "DEV" }, { "field": "tags['PatchWave']", "in": [ "Wave2-HML-Piloto", "Wave3-HML" ] } ] },
+              { "allOf": [ { "field": "tags['Ambiente']", "equals": "HML" }, { "field": "tags['PatchWave']", "equals": "Wave1-Dev" } ] }
+          ] }
+        ]
+      },
+      "then": { "effect": "audit" }
+    }
+  }
+}

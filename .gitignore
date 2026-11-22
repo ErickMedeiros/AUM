@@ -1,0 +1,7 @@
+# Segredos e saídas locais
+webhooks.local.json
+*.local.json
+tags-relatorio-*.csv
+inventario-so-suporte-*.csv
+vcenter-guestos-*.csv
+aum-role*.json

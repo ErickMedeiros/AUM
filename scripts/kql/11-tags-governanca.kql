@@ -1,0 +1,71 @@
+// =====================================================================================
+// AUM · Consultas de tags e associação às Waves (Azure Resource Graph)
+// Rodar UMA consulta por vez no Resource Graph Explorer (escopo: assinatura alvo).
+// =====================================================================================
+
+// ----- Q8 · Prévia das Waves: quem cada Dynamic Scope vai pegar e quem está pronto -----
+resources
+| where type in~ ('microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines')
+| extend ambiente = tostring(tags.Ambiente), wave = tostring(tags.PatchWave), preBackup = tostring(tags.PreBackup), dono = tostring(tags.SystemOwner)
+| extend azure = type =~ 'microsoft.compute/virtualmachines'
+| extend estado = iff(azure, tostring(split(tostring(properties.extended.instanceView.powerState.code), '/')[1]), tostring(properties.status))
+| extend patchMode = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.patchMode), tostring(properties.osProfile.linuxConfiguration.patchSettings.patchMode)),
+         bypass = coalesce(tostring(properties.osProfile.windowsConfiguration.patchSettings.automaticByPlatformSettings.bypassPlatformSafetyChecksOnUserSchedule),
+                           tostring(properties.osProfile.linuxConfiguration.patchSettings.automaticByPlatformSettings.bypassPlatformSafetyChecksOnUserSchedule))
+| extend situacao = case(
+    isempty(wave), 'Sem PatchWave',
+    wave in ('Hold', 'Nao-Aplicavel'), strcat('Fora (', wave, ')'),
+    azure and not(patchMode == 'AutomaticByPlatform' and bypass =~ 'true'), 'Falta Customer Managed Schedules',
+    azure and estado != 'running', 'Desligada',
+    not(azure) and estado != 'Connected', 'Arc não conectado',
+    isempty(preBackup), 'Falta PreBackup',
+    isempty(dono), 'Falta SystemOwner',
+    'Pronta')
+| summarize maquinas = count(), prontas = countif(situacao == 'Pronta'), detalhes = make_list(strcat(name, ' · ', situacao)) by wave, ambiente
+| order by wave asc
+
+// ----- Q11 · Tags inválidas ou incoerentes (Ambiente × PatchWave) -----
+resources
+| where type in~ ('microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines')
+| extend ambiente = tostring(tags.Ambiente), wave = tostring(tags.PatchWave)
+| extend problema = case(
+    isempty(ambiente) and isempty(wave), 'Sem tags',
+    isnotempty(ambiente) and ambiente !in ('DEV', 'HML', 'PROD'), 'Ambiente com valor inválido',
+    isnotempty(wave) and wave !in ('Wave1-Dev', 'Wave2-HML-Piloto', 'Wave3-HML', 'Hold', 'Nao-Aplicavel'), 'PatchWave com valor inválido',
+    ambiente == 'PROD' and wave startswith 'Wave', 'PROD em Wave de DEV/HML',
+    ambiente == 'DEV' and wave in ('Wave2-HML-Piloto', 'Wave3-HML'), 'DEV em Wave de HML',
+    ambiente == 'HML' and wave == 'Wave1-Dev', 'HML na Wave de DEV',
+    isempty(wave), 'Ambiente sem PatchWave',
+    isempty(ambiente), 'PatchWave sem Ambiente',
+    '')
+| where isnotempty(problema)
+| project name, type, resourceGroup, ambiente, wave, problema
+| order by problema asc, name asc
+
+// ----- Q9 · Auditoria: quem mudou Ambiente, PatchWave ou PreBackup (últimos 14 dias) -----
+resourcechanges
+| where tostring(properties.changes) has_any ('tags.PatchWave', 'tags.Ambiente', 'tags.PreBackup')
+| project quando = todatetime(properties.changeAttributes.timestamp),
+          recurso = tostring(split(tostring(properties.targetResourceId), '/')[8]),
+          quem = tostring(properties.changeAttributes.changedBy),
+          origem = tostring(properties.changeAttributes.clientType),
+          mudancas = properties.changes
+| order by quando desc
+
+// ----- Q10 · Proteção atual das VMs Azure pelo Azure Backup (define a tag PreBackup) -----
+// Se o join não for aceito, rode só a parte de recoveryservicesresources e cruze pelo nome.
+resources
+| where type =~ 'microsoft.compute/virtualmachines'
+| project vmId = tolower(id), nome = name, resourceGroup
+| join kind=leftouter (
+    recoveryservicesresources
+    | where type =~ 'microsoft.recoveryservices/vaults/backupfabrics/protectioncontainers/protecteditems'
+    | where tostring(properties.workloadType) =~ 'VM'
+    | project vmId = tolower(tostring(properties.sourceResourceId)), cofre = tostring(split(id, '/')[8]),
+              politica = tostring(properties.policyName), estadoProtecao = tostring(properties.protectionState),
+              ultimoBackup = todatetime(properties.lastBackupTime), statusUltimo = tostring(properties.lastBackupStatus)
+  ) on vmId
+| project nome, resourceGroup, preBackupSugerido = iff(isnotempty(cofre), 'AzureBackup', 'Snapshot'),
+          cofre, politica, estadoProtecao, ultimoBackup, statusUltimo
+| order by preBackupSugerido asc, nome asc
+
